@@ -6,8 +6,7 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec, vec::Vec};
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use metal_os::{serial_print, serial_println};
@@ -42,6 +41,12 @@ fn many_boxes() {
         assert_eq!(*x, i);
     }
     serial_println!("[ok]");
+}
+
+#[test_case]
+fn too_big_vec() {
+    let vec = vec![0u8; 1_000_000_000];
+    serial_println!("vec at {:p}", vec.as_slice());
 }
 
 fn main(boot_info: &'static BootInfo) -> ! {

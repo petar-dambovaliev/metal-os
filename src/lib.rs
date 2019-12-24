@@ -12,6 +12,7 @@ pub mod allocator;
 pub mod gdt;
 pub mod interrupts;
 pub mod memory;
+mod mouse;
 pub mod vga_buffer;
 
 extern crate alloc;
