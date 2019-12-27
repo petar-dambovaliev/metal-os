@@ -1,4 +1,4 @@
-use super::mouse::{Mouse, *};
+use super::mouse::{MOUSE, *};
 use crate::hlt_loop;
 use crate::print;
 use crate::println;
@@ -78,6 +78,10 @@ pub fn mouse_init() {
 
     mouse_write(0xF6);
     mouse_write(0xF4);
+
+    MOUSE.lock().left_button().on(Event::DoubleClick, || {
+        println!("double clicked");
+    });
 }
 
 fn mouse_wait(b: bool) {
@@ -114,7 +118,6 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: &mut InterruptSt
     lazy_static! {
         static ref INPUT: Mutex<[u8; 3]> = Mutex::new([0u8; 3]);
         static ref MOUSE_CYCLE: AtomicU8 = AtomicU8::new(0);
-        static ref MOUSE: Mutex<Mouse> = Mutex::new(Mouse::new());
     }
 
     loop {
@@ -139,6 +142,7 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: &mut InterruptSt
                 MOUSE_CYCLE.fetch_add(1, Ordering::Relaxed);
             }
             2 => {
+                i[ms as usize] = data;
                 MOUSE_CYCLE.store(0, Ordering::Relaxed);
                 /* The top two bits of the first byte (values 0x80 and 0x40)
                 supposedly show Y and X overflows, respectively.
@@ -149,9 +153,8 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: &mut InterruptSt
                     continue;
                 }
 
-                let packet = Packet::from(i.deref());
-                let (a, b) = time::realtime();
-                println!("a {}   b {}", a, b);
+                let packet = Packet::new(i[0] as i8, i[1] as i8, i[2], time::duration_now());
+
                 MOUSE.lock().process_packet(&packet);
             }
             _ => println!("unknown mouse cycle {}", ms),
@@ -271,6 +274,8 @@ extern "x86-interrupt" fn page_fault_handler(
 
 #[cfg(test)]
 use crate::{serial_print, serial_println};
+use core::borrow::BorrowMut;
+use core::time::Duration;
 
 #[test_case]
 fn test_breakpoint_exception() {

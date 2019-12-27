@@ -1,5 +1,14 @@
 use crate::println;
+use crate::time::duration_now;
 use alloc::{vec, vec::Vec};
+use core::ops::Sub;
+use core::time::Duration;
+use lazy_static::lazy_static;
+use spin::Mutex;
+
+lazy_static! {
+    pub static ref MOUSE: Mutex<MouseInternal> = { Mutex::new(MouseInternal::new()) };
+}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[repr(u8)]
@@ -15,31 +24,45 @@ enum State {
     Release,
 }
 
+impl State {
+    pub fn get(byte: u8, code: Code) -> State {
+        if byte & code as u8 == 1 {
+            State::Click
+        } else {
+            State::Release
+        }
+    }
+}
+
 //todo add timestamp
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Button {
+pub struct Button {
     code: Code,
     state: State,
     click_handlers: Vec<fn()>,
     doubleclick_handlers: Vec<fn()>,
     release_handlers: Vec<fn()>,
-    //timestamp:
+    updated: Duration,
+    clicked: Duration,
 }
 
 impl Button {
     fn new(byte: u8, code: Code) -> Button {
-        let state = if byte & code as u8 == 1 {
-            State::Click
-        } else {
-            State::Release
-        };
-
         Button {
             code,
-            state,
+            state: State::get(byte, code),
             click_handlers: vec![],
             doubleclick_handlers: vec![],
             release_handlers: vec![],
+            updated: Duration::new(0, 0),
+            clicked: Duration::new(0, 0),
+        }
+    }
+    pub fn on(&mut self, event: Event, f: fn()) {
+        match event {
+            Event::Click => self.click_handlers.push(f),
+            Event::DoubleClick => self.doubleclick_handlers.push(f),
+            Event::Release => self.release_handlers.push(f),
         }
     }
 }
@@ -48,19 +71,21 @@ impl Button {
 pub struct Packet {
     x_difference: i8,
     y_difference: i8,
-    buttons: [Button; 3],
+    left_button_state: State,
+    right_button_state: State,
+    middle_button_state: State,
+    time: Duration,
 }
 
-impl From<&[u8; 3]> for Packet {
-    fn from(bytes: &[u8; 3]) -> Packet {
+impl Packet {
+    pub fn new(x: i8, y: i8, buttons: u8, time: Duration) -> Packet {
         Packet {
-            x_difference: bytes[1] as i8,
-            y_difference: bytes[2] as i8,
-            buttons: [
-                Button::new(bytes[0], Code::Left),
-                Button::new(bytes[0], Code::Right),
-                Button::new(bytes[0], Code::Middle),
-            ],
+            x_difference: x,
+            y_difference: y,
+            left_button_state: State::get(buttons, Code::Left),
+            right_button_state: State::get(buttons, Code::Right),
+            middle_button_state: State::get(buttons, Code::Right),
+            time,
         }
     }
 }
@@ -73,39 +98,59 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone)]
-pub struct Mouse {
+pub struct MouseInternal {
     x: u32,
     y: u32,
-    buttons: [Button; 3],
+    left_button: Button,
+    right_button: Button,
+    middle_button: Button,
 }
 
-impl Mouse {
-    pub fn new() -> Mouse {
-        Mouse {
+impl MouseInternal {
+    fn new() -> MouseInternal {
+        MouseInternal {
             x: 0,
             y: 0,
-            buttons: [
-                Button::new(0, Code::Left),
-                Button::new(0, Code::Right),
-                Button::new(0, Code::Middle),
-            ],
+            left_button: Button::new(0, Code::Left),
+            right_button: Button::new(0, Code::Right),
+            middle_button: Button::new(0, Code::Middle),
         }
     }
     pub fn process_packet(&mut self, p: &Packet) {
         self.x = (self.x as i32 + p.x_difference as i32) as u32;
         self.y = (self.y as i32 + p.y_difference as i32) as u32;
-        //println!("x {} y {}", self.x, self.y);
-    }
-    pub fn on(&mut self, code: Code, event: Event, f: fn()) {
-        for button in self.buttons.iter_mut() {
-            if button.code == code {
-                match event {
-                    Event::Click => button.click_handlers.push(f),
-                    Event::DoubleClick => button.doubleclick_handlers.push(f),
-                    Event::Release => button.release_handlers.push(f),
-                }
-                return;
+
+        let is_doubleclicked = |b: &Button, new_state: State| -> bool {
+            let in_time = p.time.sub(b.clicked).le(&Duration::from_secs_f32(0.5));
+            if in_time && new_state == State::Click {
+                return true;
+            }
+            false
+        };
+
+        let dc = is_doubleclicked(&mut self.left_button, p.left_button_state);
+
+        if dc {
+            for doubleclick_handler in self.left_button.doubleclick_handlers.iter() {
+                doubleclick_handler();
             }
         }
+
+        self.left_button.state = p.left_button_state;
+        if !dc && p.left_button_state == State::Click {
+            self.left_button.clicked = duration_now();
+        } else if dc {
+            self.left_button.clicked = Duration::from_secs(0);
+        }
+        self.left_button.updated = p.time;
+    }
+    pub fn left_button(&mut self) -> &mut Button {
+        &mut self.left_button
+    }
+    pub fn right_button(&self) -> &Button {
+        &self.right_button
+    }
+    pub fn middle_button(&self) -> &Button {
+        &self.middle_button
     }
 }

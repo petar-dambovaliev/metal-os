@@ -1,3 +1,4 @@
+use core::time::Duration;
 use spin::Mutex;
 
 /// Kernel start time, measured in (seconds, nanoseconds) since Unix epoch
@@ -17,4 +18,9 @@ pub fn realtime() -> (u64, u64) {
         start.0 + offset.0 + sum / 1_000_000_000,
         sum % 1_000_000_000,
     )
+}
+
+pub fn duration_now() -> Duration {
+    let (sec, nano) = realtime();
+    Duration::new(sec, nano as u32)
 }
