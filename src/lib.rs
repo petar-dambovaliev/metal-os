@@ -13,6 +13,9 @@ pub mod gdt;
 pub mod interrupts;
 pub mod memory;
 mod mouse;
+mod pit;
+pub mod rtc;
+pub mod time;
 pub mod vga_buffer;
 
 extern crate alloc;
@@ -27,6 +30,9 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 pub fn init() {
     gdt::init();
     interrupts::init_idt();
+    pit::init();
+    rtc::init();
+    interrupts::mouse_init();
     unsafe { interrupts::PICS.lock().initialize() };
     x86_64::instructions::interrupts::enable();
 }

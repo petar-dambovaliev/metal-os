@@ -1,9 +1,9 @@
-use super::mouse;
-use crate::gdt;
+use super::mouse::{Mouse, *};
 use crate::hlt_loop;
 use crate::print;
 use crate::println;
-use core::borrow::Borrow;
+use crate::{gdt, time};
+use core::ops::Deref;
 use core::sync::atomic::{AtomicU8, Ordering};
 use lazy_static::lazy_static;
 use pic8259_simple::ChainedPics;
@@ -33,8 +33,6 @@ pub static PICS: spin::Mutex<ChainedPics> =
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
-        mouse_init();
-
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         unsafe {
@@ -86,7 +84,7 @@ fn mouse_wait(b: bool) {
     let mut cmd_port: Port<u8> = Port::new(0x64);
     for _ in 0..TIMEOUT {
         let status = unsafe { cmd_port.read() & MOUSE_BIT };
-        if b == is_mouse_bit(status) {
+        if b == has_data(status) {
             return;
         }
     }
@@ -105,8 +103,8 @@ fn mouse_write(b: u8) {
     }
 }
 
-fn is_mouse_bit(b: u8) -> bool {
-    return b & MOUSE_BIT == 1;
+fn has_data(b: u8) -> bool {
+    return b & MOUSE_BIT != 0;
 }
 
 extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: &mut InterruptStackFrame) {
@@ -116,42 +114,47 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: &mut InterruptSt
     lazy_static! {
         static ref INPUT: Mutex<[u8; 3]> = Mutex::new([0u8; 3]);
         static ref MOUSE_CYCLE: AtomicU8 = AtomicU8::new(0);
-        static ref MOUSE: mouse::Mouse = mouse::Mouse::new();
+        static ref MOUSE: Mutex<Mouse> = Mutex::new(Mouse::new());
     }
 
-    while let status = unsafe { cmd_port.read() } {
-        if !is_mouse_bit(status) {
+    loop {
+        let status = unsafe { cmd_port.read() };
+        if !has_data(status) {
             break;
         }
-        let data = unsafe { data_port.read() };
-        if data & GET_COMPAQ_STATUS_BYTE == 0 {
+
+        // the keyboard is on the same port
+        // don't do anything if it's not a mouse packet
+        if status & GET_COMPAQ_STATUS_BYTE == 0 {
             continue;
         }
 
+        let data = unsafe { data_port.read() };
         let mut i = INPUT.lock();
-
         let ms = MOUSE_CYCLE.load(Ordering::Relaxed);
-        unsafe {
-            match ms {
-                0..=1 => {
-                    i[ms as usize] = data;
-                    MOUSE_CYCLE.fetch_add(1, Ordering::Relaxed);
-                }
-                2 => {
-                    MOUSE_CYCLE.store(0, Ordering::Relaxed);
-                    /* The top two bits of the first byte (values 0x80 and 0x40)
-                    supposedly show Y and X overflows, respectively.
-                    They are not useful.
-                    If they are set, you should probably just discard the entire packet. */
-                    if i[0] & 0x80 == 1 || i[0] & 0x40 == 1 {
-                        panic!("bad packet");
-                    }
 
-                    let packet = mouse::Packet::from(i.deref());
-                    MOUSE.process_packet(&packet);
-                }
-                _ => {}
+        match ms {
+            0..=1 => {
+                i[ms as usize] = data;
+                MOUSE_CYCLE.fetch_add(1, Ordering::Relaxed);
             }
+            2 => {
+                MOUSE_CYCLE.store(0, Ordering::Relaxed);
+                /* The top two bits of the first byte (values 0x80 and 0x40)
+                supposedly show Y and X overflows, respectively.
+                They are not useful.
+                If they are set, you should probably just discard the entire packet. */
+                if i[0] & 0x80 == 1 || i[0] & 0x40 == 1 {
+                    println!("bad mouse packet {:?}", i);
+                    continue;
+                }
+
+                let packet = Packet::from(i.deref());
+                let (a, b) = time::realtime();
+                println!("a {}   b {}", a, b);
+                MOUSE.lock().process_packet(&packet);
+            }
+            _ => println!("unknown mouse cycle {}", ms),
         }
     }
 
@@ -241,6 +244,12 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut InterruptStackFra
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: &mut InterruptStackFrame) {
+    const PIT_RATE: u64 = 2_250_286;
+    let mut offset = time::OFFSET.lock();
+    let sum = offset.1 + PIT_RATE;
+    offset.1 = sum % 1_000_000_000;
+    offset.0 += sum / 1_000_000_000;
+
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
@@ -262,7 +271,6 @@ extern "x86-interrupt" fn page_fault_handler(
 
 #[cfg(test)]
 use crate::{serial_print, serial_println};
-use core::ops::Deref;
 
 #[test_case]
 fn test_breakpoint_exception() {
