@@ -3,7 +3,6 @@ use crate::hlt_loop;
 use crate::print;
 use crate::println;
 use crate::{gdt, time};
-use core::ops::Deref;
 use core::sync::atomic::{AtomicU8, Ordering};
 use lazy_static::lazy_static;
 use pic8259_simple::ChainedPics;
@@ -73,24 +72,11 @@ pub fn mouse_init() {
         mouse_wait(true);
         data_port.write(status_byte);
         mouse_wait(true);
-        let ack = cmd_port.read();
+        let _ack = cmd_port.read();
     }
 
     mouse_write(0xF6);
     mouse_write(0xF4);
-
-    let mut m = MOUSE.lock();
-    m.left_button().on(Event::DoubleClick, || {
-        println!("left double clicked");
-    });
-
-    m.left_button().on(Event::Click, || {
-        println!("left clicked");
-    });
-
-    m.right_button().on(Event::Click, || {
-        println!("right clicked");
-    });
 }
 
 fn mouse_wait(b: bool) {
@@ -283,8 +269,6 @@ extern "x86-interrupt" fn page_fault_handler(
 
 #[cfg(test)]
 use crate::{serial_print, serial_println};
-use core::borrow::BorrowMut;
-use core::time::Duration;
 
 #[test_case]
 fn test_breakpoint_exception() {

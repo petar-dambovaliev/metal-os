@@ -1,4 +1,3 @@
-use crate::println;
 use crate::time::duration_now;
 use alloc::{vec, vec::Vec};
 use core::ops::Sub;

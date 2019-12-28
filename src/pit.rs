@@ -1,8 +1,9 @@
-use crate::println;
 use x86_64::instructions::port::Port;
 
 pub static mut CHAN0: Port<u8> = Port::new(0x40);
+#[allow(dead_code)]
 pub static mut CHAN1: Port<u8> = Port::new(0x41);
+#[allow(dead_code)]
 pub static mut CHAN2: Port<u8> = Port::new(0x42);
 pub static mut COMMAND: Port<u8> = Port::new(0x43);
 

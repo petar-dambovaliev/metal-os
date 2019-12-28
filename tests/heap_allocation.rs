@@ -6,7 +6,7 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use metal_os::{serial_print, serial_println};
@@ -43,25 +43,20 @@ fn many_boxes() {
     serial_println!("[ok]");
 }
 
-#[test_case]
-fn too_big_vec() {
-    let vec = vec![0u8; 1_000_000_000];
-    serial_println!("vec at {:p}", vec.as_slice());
-}
-
 fn main(boot_info: &'static BootInfo) -> ! {
     use metal_os::allocator;
     use metal_os::memory::{self, BootInfoFrameAllocator};
     use x86_64::VirtAddr;
 
-    metal_os::init();
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
     let mut mapper = unsafe { memory::init(phys_mem_offset) };
     let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
 
+    metal_os::init();
+
     test_main();
-    loop {}
+    metal_os::hlt_loop();
 }
 
 #[panic_handler]

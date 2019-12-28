@@ -12,7 +12,7 @@ pub mod allocator;
 pub mod gdt;
 pub mod interrupts;
 pub mod memory;
-mod mouse;
+pub mod mouse;
 mod pit;
 pub mod rtc;
 pub mod time;
@@ -32,9 +32,9 @@ pub fn init() {
     interrupts::init_idt();
     pit::init();
     rtc::init();
-    interrupts::mouse_init();
     unsafe { interrupts::PICS.lock().initialize() };
     x86_64::instructions::interrupts::enable();
+    interrupts::mouse_init();
 }
 
 #[alloc_error_handler]
@@ -50,12 +50,21 @@ pub fn hlt_loop() -> ! {
 
 #[cfg(test)]
 use bootloader::{entry_point, BootInfo};
+
 #[cfg(test)]
 entry_point!(test_kernel_main);
 
 /// Entry point for `cargo xtest`
 #[cfg(test)]
 fn test_kernel_main(_boot_info: &'static BootInfo) -> ! {
+    use crate::memory::BootInfoFrameAllocator;
+    use x86_64::VirtAddr;
+
+    let phys_mem_offset = VirtAddr::new(_boot_info.physical_memory_offset);
+    let mut mapper = unsafe { memory::init(phys_mem_offset) };
+    let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&_boot_info.memory_map) };
+    allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
+
     init();
     test_main();
     hlt_loop();
