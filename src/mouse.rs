@@ -26,7 +26,7 @@ enum State {
 
 impl State {
     pub fn get(byte: u8, code: Code) -> State {
-        if byte & code as u8 == 1 {
+        if byte & code as u8 != 0 {
             State::Click
         } else {
             State::Release
@@ -84,7 +84,7 @@ impl Packet {
             y_difference: y,
             left_button_state: State::get(buttons, Code::Left),
             right_button_state: State::get(buttons, Code::Right),
-            middle_button_state: State::get(buttons, Code::Right),
+            middle_button_state: State::get(buttons, Code::Middle),
             time,
         }
     }
@@ -122,35 +122,44 @@ impl MouseInternal {
 
         let is_doubleclicked = |b: &Button, new_state: State| -> bool {
             let in_time = p.time.sub(b.clicked).le(&Duration::from_secs_f32(0.5));
-            if in_time && new_state == State::Click {
-                return true;
-            }
-            false
+            in_time && new_state == State::Click
         };
 
-        let dc = is_doubleclicked(&mut self.left_button, p.left_button_state);
+        let dc = is_doubleclicked(&self.left_button, p.left_button_state);
 
-        if dc {
+        self.left_button.state = p.left_button_state;
+        self.left_button.updated = p.time;
+        if !dc && p.left_button_state == State::Click {
+            self.left_button.clicked = duration_now();
+            for click_handler in self.left_button.click_handlers.iter() {
+                click_handler();
+            }
+        } else if dc {
+            self.left_button.clicked = Duration::from_secs(0);
             for doubleclick_handler in self.left_button.doubleclick_handlers.iter() {
                 doubleclick_handler();
             }
         }
 
-        self.left_button.state = p.left_button_state;
-        if !dc && p.left_button_state == State::Click {
-            self.left_button.clicked = duration_now();
-        } else if dc {
-            self.left_button.clicked = Duration::from_secs(0);
+        self.right_button.state = p.right_button_state;
+        self.right_button.updated = p.time;
+
+        let handlers = match p.right_button_state {
+            State::Click => &self.right_button.click_handlers,
+            State::Release => &self.right_button.release_handlers,
+        };
+
+        for handler in handlers.iter() {
+            handler();
         }
-        self.left_button.updated = p.time;
     }
     pub fn left_button(&mut self) -> &mut Button {
         &mut self.left_button
     }
-    pub fn right_button(&self) -> &Button {
-        &self.right_button
+    pub fn right_button(&mut self) -> &mut Button {
+        &mut self.right_button
     }
-    pub fn middle_button(&self) -> &Button {
-        &self.middle_button
+    pub fn middle_button(&mut self) -> &mut Button {
+        &mut self.middle_button
     }
 }

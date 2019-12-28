@@ -79,8 +79,17 @@ pub fn mouse_init() {
     mouse_write(0xF6);
     mouse_write(0xF4);
 
-    MOUSE.lock().left_button().on(Event::DoubleClick, || {
-        println!("double clicked");
+    let mut m = MOUSE.lock();
+    m.left_button().on(Event::DoubleClick, || {
+        println!("left double clicked");
+    });
+
+    m.left_button().on(Event::Click, || {
+        println!("left clicked");
+    });
+
+    m.right_button().on(Event::Click, || {
+        println!("right clicked");
     });
 }
 
