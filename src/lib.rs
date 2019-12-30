@@ -33,8 +33,10 @@ pub fn init() {
     pit::init();
     rtc::init();
     unsafe { interrupts::PICS.lock().initialize() };
+    // have to initialize the mouse before
+    // enabling the interrupts or we will have a deadlock
+    mouse::MOUSE.lock().init();
     x86_64::instructions::interrupts::enable();
-    interrupts::mouse_init();
 }
 
 #[alloc_error_handler]

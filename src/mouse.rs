@@ -1,9 +1,11 @@
+use crate::println;
 use crate::time::duration_now;
 use alloc::{vec, vec::Vec};
 use core::ops::Sub;
 use core::time::Duration;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use x86_64::instructions::port::Port;
 
 lazy_static! {
     pub static ref MOUSE: Mutex<MouseInternal> = { Mutex::new(MouseInternal::new()) };
@@ -98,6 +100,8 @@ pub enum Event {
 
 #[derive(Debug, Clone)]
 pub struct MouseInternal {
+    cmd_port: Port<u8>,
+    data_port: Port<u8>,
     x: u32,
     y: u32,
     left_button: Button,
@@ -105,9 +109,26 @@ pub struct MouseInternal {
     middle_button: Button,
 }
 
+//Get Compaq Status Byte command
+const GET_COMPAQ_STATUS_BYTE: u8 = 0x20;
+//Set Compaq Status Byte command
+const SET_COMPAQ_STATUS_BYTE: u8 = 0x60;
+//Auxiliary Device command
+const AUXILIARY_DEVICE_BYTE: u8 = 0xA8;
+const IRQ12_BIT_POS: u8 = 1;
+const MOUSE_CLOCK_BIT_POS: u8 = 5;
+const WRITE: u8 = 0xD4;
+
+const TIMEOUT: u32 = 100000;
+const MOUSE_BIT: u8 = 0x01;
+
+use core::sync::atomic::{AtomicU8, Ordering};
+
 impl MouseInternal {
     fn new() -> MouseInternal {
         MouseInternal {
+            cmd_port: Port::new(0x64),
+            data_port: Port::new(0x60),
             x: 0,
             y: 0,
             left_button: Button::new(0, Code::Left),
@@ -152,6 +173,108 @@ impl MouseInternal {
             handler();
         }
     }
+
+    pub fn handler(&mut self) {
+        lazy_static! {
+            static ref INPUT: Mutex<[u8; 3]> = Mutex::new([0u8; 3]);
+            static ref MOUSE_CYCLE: AtomicU8 = AtomicU8::new(0);
+        }
+
+        loop {
+            let status = unsafe { self.cmd_port.read() };
+            if !self.has_data(status) {
+                break;
+            }
+
+            // the keyboard is on the same port
+            // don't do anything if it's not a mouse packet
+            if status & GET_COMPAQ_STATUS_BYTE == 0 {
+                continue;
+            }
+
+            let data = unsafe { self.data_port.read() };
+            let mut i = INPUT.lock();
+            let ms = MOUSE_CYCLE.load(Ordering::Relaxed);
+
+            match ms {
+                0..=1 => {
+                    i[ms as usize] = data;
+                    MOUSE_CYCLE.fetch_add(1, Ordering::Relaxed);
+                }
+                2 => {
+                    i[ms as usize] = data;
+                    MOUSE_CYCLE.store(0, Ordering::Relaxed);
+                    /* The top two bits of the first byte (values 0x80 and 0x40)
+                    supposedly show Y and X overflows, respectively.
+                    They are not useful.
+                    If they are set, you should probably just discard the entire packet. */
+                    if i[0] & 0x80 == 1 || i[0] & 0x40 == 1 {
+                        println!("bad mouse packet {:?}", i);
+                        continue;
+                    }
+
+                    let packet = Packet::new(i[0] as i8, i[1] as i8, i[2], duration_now());
+
+                    self.process_packet(&packet);
+                    let (x, y) = self.coordinates();
+                    println!("x {} y {}", x, y);
+                }
+                _ => println!("unknown mouse cycle {}", ms),
+            }
+        }
+    }
+
+    pub fn init(&mut self) {
+        unsafe {
+            self.wait(true);
+            self.cmd_port.write(AUXILIARY_DEVICE_BYTE);
+            self.wait(true);
+            self.cmd_port.write(GET_COMPAQ_STATUS_BYTE);
+            self.wait(false);
+        }
+
+        let mut status_byte = unsafe { self.data_port.read() | 2 };
+        self.wait(true);
+        //enable the aux port to generate IRQ12
+        status_byte |= 1 << IRQ12_BIT_POS;
+        //Disable Mouse Clock
+        status_byte &= !(1 << MOUSE_CLOCK_BIT_POS);
+
+        unsafe {
+            self.cmd_port.write(SET_COMPAQ_STATUS_BYTE);
+            self.wait(true);
+            self.data_port.write(status_byte);
+            self.wait(true);
+            let _ack = self.cmd_port.read();
+        }
+
+        self.write(0xF6);
+        self.write(0xF4);
+    }
+
+    pub fn write(&mut self, b: u8) {
+        self.wait(true);
+        unsafe {
+            self.cmd_port.write(WRITE);
+        }
+        self.wait(true);
+        unsafe {
+            self.data_port.write(b);
+        }
+    }
+
+    fn wait(&mut self, b: bool) {
+        for _ in 0..TIMEOUT {
+            let status = unsafe { self.cmd_port.read() & MOUSE_BIT };
+            if b == self.has_data(status) {
+                return;
+            }
+        }
+    }
+    fn has_data(&self, b: u8) -> bool {
+        return b & MOUSE_BIT != 0;
+    }
+
     pub fn left_button(&mut self) -> &mut Button {
         &mut self.left_button
     }
@@ -160,5 +283,8 @@ impl MouseInternal {
     }
     pub fn middle_button(&mut self) -> &mut Button {
         &mut self.middle_button
+    }
+    pub fn coordinates(&self) -> (u32, u32) {
+        (self.x, self.y)
     }
 }
