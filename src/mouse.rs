@@ -2,6 +2,7 @@ use crate::println;
 use crate::time::duration_now;
 use alloc::{vec, vec::Vec};
 use core::ops::Sub;
+use core::sync::atomic::{AtomicU8, Ordering};
 use core::time::Duration;
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -10,6 +11,19 @@ use x86_64::instructions::port::Port;
 lazy_static! {
     pub static ref MOUSE: Mutex<MouseInternal> = { Mutex::new(MouseInternal::new()) };
 }
+
+//Get Compaq Status Byte command
+const GET_COMPAQ_STATUS_BYTE: u8 = 0x20;
+//Set Compaq Status Byte command
+const SET_COMPAQ_STATUS_BYTE: u8 = 0x60;
+//Auxiliary Device command
+const AUXILIARY_DEVICE_BYTE: u8 = 0xA8;
+const IRQ12_BIT_POS: u8 = 1;
+const MOUSE_CLOCK_BIT_POS: u8 = 5;
+const WRITE: u8 = 0xD4;
+const TIMEOUT: u32 = 100000;
+const MOUSE_BIT: u8 = 0x01;
+const DOUBLECLICK_TIMER: f32 = 0.5;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[repr(u8)]
@@ -66,10 +80,36 @@ impl Button {
             Event::Release => self.release_handlers.push(f),
         }
     }
+    fn is_doubleclicked(&self, new_state: State, dur: Duration, clicked_at: Duration) -> bool {
+        dur.sub(clicked_at)
+            .le(&Duration::from_secs_f32(DOUBLECLICK_TIMER))
+            && new_state == State::Click
+    }
+    fn trigger_events(&mut self, new_state: State, dur: Duration) {
+        self.state = new_state;
+        self.updated = dur;
+
+        let dc = self.is_doubleclicked(new_state, dur, self.clicked);
+        let mut handlers: Vec<fn()> = vec![];
+
+        if !dc && new_state == State::Click {
+            self.clicked = duration_now();
+            handlers.append(&mut self.click_handlers);
+        } else if dc {
+            self.clicked = Duration::from_secs(0);
+            handlers.append(&mut self.doubleclick_handlers);
+        } else if self.state == State::Release {
+            handlers.append(&mut self.release_handlers);
+        }
+
+        for handler in handlers.iter() {
+            handler();
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct Packet {
+struct Packet {
     x_difference: i8,
     y_difference: i8,
     left_button_state: State,
@@ -109,21 +149,6 @@ pub struct MouseInternal {
     middle_button: Button,
 }
 
-//Get Compaq Status Byte command
-const GET_COMPAQ_STATUS_BYTE: u8 = 0x20;
-//Set Compaq Status Byte command
-const SET_COMPAQ_STATUS_BYTE: u8 = 0x60;
-//Auxiliary Device command
-const AUXILIARY_DEVICE_BYTE: u8 = 0xA8;
-const IRQ12_BIT_POS: u8 = 1;
-const MOUSE_CLOCK_BIT_POS: u8 = 5;
-const WRITE: u8 = 0xD4;
-
-const TIMEOUT: u32 = 100000;
-const MOUSE_BIT: u8 = 0x01;
-
-use core::sync::atomic::{AtomicU8, Ordering};
-
 impl MouseInternal {
     fn new() -> MouseInternal {
         MouseInternal {
@@ -136,42 +161,15 @@ impl MouseInternal {
             middle_button: Button::new(0, Code::Middle),
         }
     }
-    pub fn process_packet(&mut self, p: &Packet) {
+    fn process_packet(&mut self, p: &Packet) {
         self.x = (self.x as i32 + p.x_difference as i32) as u32;
         self.y = (self.y as i32 + p.y_difference as i32) as u32;
 
-        let is_doubleclicked = |b: &Button, new_state: State| -> bool {
-            let in_time = p.time.sub(b.clicked).le(&Duration::from_secs_f32(0.5));
-            in_time && new_state == State::Click
-        };
-
-        let dc = is_doubleclicked(&self.left_button, p.left_button_state);
-
-        self.left_button.state = p.left_button_state;
-        self.left_button.updated = p.time;
-        if !dc && p.left_button_state == State::Click {
-            self.left_button.clicked = duration_now();
-            for click_handler in self.left_button.click_handlers.iter() {
-                click_handler();
-            }
-        } else if dc {
-            self.left_button.clicked = Duration::from_secs(0);
-            for doubleclick_handler in self.left_button.doubleclick_handlers.iter() {
-                doubleclick_handler();
-            }
-        }
-
-        self.right_button.state = p.right_button_state;
-        self.right_button.updated = p.time;
-
-        let handlers = match p.right_button_state {
-            State::Click => &self.right_button.click_handlers,
-            State::Release => &self.right_button.release_handlers,
-        };
-
-        for handler in handlers.iter() {
-            handler();
-        }
+        self.left_button.trigger_events(p.left_button_state, p.time);
+        self.right_button
+            .trigger_events(p.right_button_state, p.time);
+        self.middle_button
+            .trigger_events(p.middle_button_state, p.time);
     }
 
     pub fn handler(&mut self) {
@@ -252,7 +250,7 @@ impl MouseInternal {
         self.write(0xF4);
     }
 
-    pub fn write(&mut self, b: u8) {
+    fn write(&mut self, b: u8) {
         self.wait(true);
         unsafe {
             self.cmd_port.write(WRITE);
